@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace "net.polze.adolarradio"
-    compileSdk 35
+    compileSdk 36
 
     buildFeatures {
         buildConfig true
@@ -16,7 +16,7 @@ android {
         // while the new product is developed.
         applicationId "net.polze.adolarnext"
         minSdk 23
-        targetSdk 35
+        targetSdk 36
         versionCode 1
         versionName "0.1.0-next"
 

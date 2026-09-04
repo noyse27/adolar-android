@@ -1,7 +1,6 @@
 package net.polze.adolarradio;
 
 import android.Manifest;
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.pm.PackageManager;
@@ -40,6 +39,8 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.res.ResourcesCompat;
 
@@ -59,7 +60,7 @@ import org.json.JSONObject;
  * Playback deliberately lives only in {@link AdolarMediaService}; the Activity
  * can disappear without creating a second player or interrupting the queue.
  */
-public class MainActivity extends Activity {
+public class MainActivity extends ComponentActivity {
     private static final String ROOT_ID = AdolarMediaService.BROWSE_RADIOS_ROOT;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -185,6 +186,12 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         migrateWebViewSession();
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleBackPressed();
+            }
+        });
         orbitronMedium = ResourcesCompat.getFont(this, R.font.orbitron_medium);
         orbitronBold = ResourcesCompat.getFont(this, R.font.orbitron_bold);
         requestNotificationPermissionIfNeeded();
@@ -1361,13 +1368,12 @@ public class MainActivity extends Activity {
         selectedStationLabel.setText(getString(R.string.station_selected_format, name));
     }
 
-    @Override
-    public void onBackPressed() {
+    private void handleBackPressed() {
         if (showingSettings && AdolarPrefs.hasServerUrl(this)) {
             showPlayer();
             return;
         }
-        super.onBackPressed();
+        finish();
     }
 
     private void applySystemBarInsets(View view) {

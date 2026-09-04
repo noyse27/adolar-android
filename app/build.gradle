@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace "net.polze.adolarradio"
-    compileSdk 35
+    compileSdk 36
 
     buildFeatures {
         buildConfig true
@@ -16,7 +16,7 @@ android {
         // while the new product is developed.
         applicationId "net.polze.adolarnext"
         minSdk 23
-        targetSdk 35
+        targetSdk 36
         versionCode 1
         versionName "0.1.0-next"
 
@@ -29,6 +29,7 @@ android {
 }
 
 dependencies {
+    implementation "androidx.activity:activity:1.13.0"
     implementation "androidx.media:media:1.8.0"
     implementation "androidx.documentfile:documentfile:1.1.0"
     implementation "androidx.drawerlayout:drawerlayout:1.2.0"
@@ -40,8 +41,8 @@ dependencies {
     // local/DeviceTokenStore.java).
     implementation "androidx.security:security-crypto:1.1.0"
     // 1.9.4 is the newest stable Media3 line compatible with this app's API 35 toolchain.
-    implementation "androidx.media3:media3-exoplayer:1.9.4"
-    implementation "androidx.media3:media3-common:1.9.4"
-    implementation "androidx.media3:media3-datasource:1.9.4"
-    implementation "androidx.media3:media3-database:1.9.4"
+    implementation "androidx.media3:media3-exoplayer:1.11.0"
+    implementation "androidx.media3:media3-common:1.11.0"
+    implementation "androidx.media3:media3-datasource:1.11.0"
+    implementation "androidx.media3:media3-database:1.11.0"
 }

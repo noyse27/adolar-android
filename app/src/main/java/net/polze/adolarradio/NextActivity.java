@@ -1,7 +1,6 @@
 package net.polze.adolarradio;
 
 import android.Manifest;
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -38,6 +37,8 @@ import android.widget.Toast;
 import android.text.Editable;
 import android.text.TextWatcher;
 
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.GravityCompat;
@@ -64,7 +65,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Offline-first launcher and local-library shell for Adolar Next. */
-public class NextActivity extends Activity {
+public class NextActivity extends ComponentActivity {
     private static final int REQUEST_MUSIC_TREE = 2001;
     private static final int REQUEST_MEDIA_PERMISSION = 2002;
     private static final String LOCAL_TRACK_PREFIX = "local:";
@@ -204,6 +205,12 @@ public class NextActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleBackPressed();
+            }
+        });
         repository = LocalLibraryRepository.get(this);
         artworkCache = ArtworkCache.get(this);
         requestNotificationPermissionIfNeeded();
@@ -392,7 +399,7 @@ public class NextActivity extends Activity {
         toolbarBack.setGravity(Gravity.CENTER);
         toolbarBack.setVisibility(View.GONE);
         toolbarBack.setContentDescription(getString(R.string.navigate_back));
-        toolbarBack.setOnClickListener(view -> onBackPressed());
+        toolbarBack.setOnClickListener(view -> getOnBackPressedDispatcher().onBackPressed());
         toolbar.addView(toolbarBack, new LinearLayout.LayoutParams(dp(42), dp(52)));
 
         toolbarIcon = text("♫", 26, R.color.accent);
@@ -1713,8 +1720,7 @@ public class NextActivity extends Activity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void handleBackPressed() {
         if (drawerLayout != null && drawerLayout.isDrawerOpen(DRAWER_GRAVITY)) {
             drawerLayout.closeDrawer(DRAWER_GRAVITY);
             return;
@@ -1735,7 +1741,7 @@ public class NextActivity extends Activity {
             showAllTracks();
             return;
         }
-        super.onBackPressed();
+        finish();
     }
 
     private TextView text(String value, int size, int colorResource) {

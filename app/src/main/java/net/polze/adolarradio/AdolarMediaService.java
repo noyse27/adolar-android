@@ -1304,6 +1304,11 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             }
             connection = openConnection(urlBuilder.build().toString(), "GET");
             if (!isSuccessful(connection)) {
+                int status = connection.getResponseCode();
+                InputStream errorStream = connection.getErrorStream();
+                String errorBody = errorStream == null ? "" : readAll(errorStream);
+                Log.w(TAG, "track batch request rejected station=" + stationId
+                        + " status=" + status + " body=" + errorBody);
                 return result;
             }
             String nextSession = connection.getHeaderField("X-Shuffle-Session");

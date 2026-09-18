@@ -6,6 +6,20 @@ import java.util.Map;
 final class RadioJingleSchedule {
     private final Map<Integer, Integer> scheduled = new HashMap<>();
 
+    synchronized void reset(int stationId) {
+        scheduled.remove(stationId);
+    }
+
+    synchronized boolean beginBatch(int stationId, int every) {
+        if (every <= 0) {
+            scheduled.remove(stationId);
+            return false;
+        }
+        if (scheduled.containsKey(stationId)) return false;
+        scheduled.put(stationId, 0);
+        return true;
+    }
+
     synchronized boolean afterTrack(int stationId, int every) {
         if (every <= 0) {
             scheduled.remove(stationId);

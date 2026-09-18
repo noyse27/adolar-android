@@ -4,6 +4,15 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class RadioJingleScheduleTest {
+    @Test public void startupJingleOccursOnceAndAgainAfterRestart() {
+        RadioJingleSchedule schedule = new RadioJingleSchedule();
+        assertTrue(schedule.beginBatch(1, 5));
+        assertFalse(schedule.beginBatch(1, 5));
+        schedule.reset(1);
+        assertTrue(schedule.beginBatch(1, 5));
+        assertFalse(schedule.beginBatch(2, 0));
+    }
+
     @Test public void intervalSurvivesBatchBoundaries() {
         RadioJingleSchedule schedule = new RadioJingleSchedule();
         for (int i = 1; i <= 20; i++) {

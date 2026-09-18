@@ -292,6 +292,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             finishCurrentTrack(false, "track_change");
             if (localMode) persistLocalPlayback(false);
             currentStationId = station.id;
+            radioJingleSchedule.reset(station.id);
             currentStationName = station.name;
             currentStationEngine = station.engine;
             localMode = false;
@@ -1325,6 +1326,9 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             } catch (NumberFormatException ignored) {
                 // Older servers do not advertise jingle settings.
             }
+            if (tracks.length() > 0 && radioJingleSchedule.beginBatch(stationId, jingleEvery)) {
+                result.add(stationJingle(stationId));
+            }
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject item = tracks.getJSONObject(index);
                 Track track = new Track();
@@ -1342,15 +1346,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 track.streamVersion = item.optString("stream_version", "");
                 result.add(track);
                 if (radioJingleSchedule.afterTrack(stationId, jingleEvery)) {
-                    Track jingle = new Track();
-                    jingle.id = -stationId;
-                    jingle.jingle = true;
-                    jingle.title = "Jingle / Station ID";
-                    jingle.artist = currentStationName;
-                    jingle.album = "";
-                    jingle.coverHash = "";
-                    jingle.streamVersion = "";
-                    result.add(jingle);
+                    result.add(stationJingle(stationId));
                 }
             }
             return result;
@@ -1362,6 +1358,18 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 connection.disconnect();
             }
         }
+    }
+
+    private Track stationJingle(int stationId) {
+        Track jingle = new Track();
+        jingle.id = -stationId;
+        jingle.jingle = true;
+        jingle.title = "Jingle / Station ID";
+        jingle.artist = currentStationName;
+        jingle.album = "";
+        jingle.coverHash = "";
+        jingle.streamVersion = "";
+        return jingle;
     }
 
     private void startTrack(Track track) {

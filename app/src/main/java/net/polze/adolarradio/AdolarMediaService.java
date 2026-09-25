@@ -1256,6 +1256,14 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         return stations;
     }
 
+    /**
+     * Adolar4U's recommendation query can run noticeably longer than a plain
+     * shuffle pick, especially against a NAS-hosted backend -- the default
+     * 8s connection timeout was tight enough to cause spurious
+     * SocketTimeoutExceptions there even while the session was valid.
+     */
+    private static final int TRACK_BATCH_READ_TIMEOUT_MS = 20000;
+
     private void loadNextTrack() {
         if (!AdolarPrefs.hasServerUrl(this)) {
             updatePlaybackState(PlaybackStateCompat.STATE_ERROR, getString(R.string.car_no_server));
@@ -1270,28 +1278,50 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         updatePlaybackState(PlaybackStateCompat.STATE_BUFFERING, null);
         new Thread(() -> {
             long started = android.os.SystemClock.elapsedRealtime();
-            List<Track> tracks = fetchStationTracks(currentStationId, TRACK_BATCH_SIZE);
-            Log.d(TAG, "track batch loaded count=" + tracks.size() + " durationMs="
+            TrackBatchResult batch = fetchStationTracks(currentStationId, TRACK_BATCH_SIZE);
+            Log.d(TAG, "track batch loaded count=" + batch.tracks.size() + " durationMs="
                     + (android.os.SystemClock.elapsedRealtime() - started));
             mainHandler.post(() -> {
                 queueRequestInFlight = false;
                 if (request != playbackRequest) {
                     return;
                 }
-                if (tracks.isEmpty()) {
-                    updatePlaybackState(
-                            PlaybackStateCompat.STATE_ERROR,
-                            "Sender nicht verfügbar. Für Adolar4U bitte in der Handy-App anmelden."
-                    );
+                if (batch.tracks.isEmpty()) {
+                    String message;
+                    switch (batch.failure) {
+                        case AUTH_REQUIRED:
+                            message = "Sender nicht verfügbar. Für Adolar4U bitte in der "
+                                    + "Handy-App anmelden.";
+                            break;
+                        case TIMEOUT:
+                            message = "Sender antwortet nicht (Zeitüberschreitung). "
+                                    + "Bitte später erneut versuchen.";
+                            break;
+                        default:
+                            message = "Sender momentan nicht erreichbar.";
+                    }
+                    updatePlaybackState(PlaybackStateCompat.STATE_ERROR, message);
                 } else {
-                    upcomingTracks.addAll(tracks);
+                    upcomingTracks.addAll(batch.tracks);
                     startTrack(upcomingTracks.removeFirst());
                 }
             });
         }, "AdolarTrackLoader").start();
     }
 
-    private List<Track> fetchStationTracks(int stationId, int count) {
+    private enum TrackFetchFailure { NONE, AUTH_REQUIRED, TIMEOUT, OTHER }
+
+    private static final class TrackBatchResult {
+        final List<Track> tracks;
+        final TrackFetchFailure failure;
+
+        TrackBatchResult(List<Track> tracks, TrackFetchFailure failure) {
+            this.tracks = tracks;
+            this.failure = failure;
+        }
+    }
+
+    private TrackBatchResult fetchStationTracks(int stationId, int count) {
         List<Track> result = new ArrayList<>();
         HttpURLConnection connection = null;
         try {
@@ -1303,13 +1333,17 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 urlBuilder.appendQueryParameter("shuffle_session", shuffleSession);
             }
             connection = openConnection(urlBuilder.build().toString(), "GET");
+            connection.setReadTimeout(TRACK_BATCH_READ_TIMEOUT_MS);
             if (!isSuccessful(connection)) {
                 int status = connection.getResponseCode();
                 InputStream errorStream = connection.getErrorStream();
                 String errorBody = errorStream == null ? "" : readAll(errorStream);
                 Log.w(TAG, "track batch request rejected station=" + stationId
                         + " status=" + status + " body=" + errorBody);
-                return result;
+                TrackFetchFailure failure = (status == 401 || status == 403)
+                        ? TrackFetchFailure.AUTH_REQUIRED
+                        : TrackFetchFailure.OTHER;
+                return new TrackBatchResult(result, failure);
             }
             String nextSession = connection.getHeaderField("X-Shuffle-Session");
             if (nextSession != null && !nextSession.isEmpty()) {
@@ -1333,10 +1367,13 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 track.streamVersion = item.optString("stream_version", "");
                 result.add(track);
             }
-            return result;
+            return new TrackBatchResult(result, TrackFetchFailure.NONE);
+        } catch (java.net.SocketTimeoutException exception) {
+            Log.w(TAG, "track batch request timed out", exception);
+            return new TrackBatchResult(result, TrackFetchFailure.TIMEOUT);
         } catch (Exception exception) {
             Log.w(TAG, "track batch request failed", exception);
-            return result;
+            return new TrackBatchResult(result, TrackFetchFailure.OTHER);
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -1420,7 +1457,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         final int owningRequest = playbackRequest;
         new Thread(() -> {
             long started = android.os.SystemClock.elapsedRealtime();
-            List<Track> tracks = fetchStationTracks(currentStationId, TRACK_BATCH_SIZE);
+            List<Track> tracks = fetchStationTracks(currentStationId, TRACK_BATCH_SIZE).tracks;
             mainHandler.post(() -> {
                 queueRequestInFlight = false;
                 if (owningRequest != playbackRequest) return;

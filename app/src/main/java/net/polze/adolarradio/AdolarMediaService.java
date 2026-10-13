@@ -146,6 +146,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     private Runnable crossfadeStep;
     private long bufferingStartedMs;
     private int currentStationId = 1;
+    private final RadioJingleSchedule radioJingleSchedule = new RadioJingleSchedule();
     private String currentStationName = "Adolar Radio";
     private String currentStationEngine = "shuffle";
     private boolean localMode;
@@ -162,7 +163,8 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         public void run() {
             updateLocalPlaybackEligibility();
             if (!crossfadeActive && player != null && player.isPlaying()
-                    && preloadedTrack != null
+                    && preloadedTrack != null && !preloadedTrack.jingle
+                    && currentTrack != null && !currentTrack.jingle
                     && preloadPlayer.getPlaybackState() == Player.STATE_READY) {
                 long duration = player.getDuration();
                 long remaining = duration == C.TIME_UNSET ? Long.MAX_VALUE : duration - player.getCurrentPosition();
@@ -290,6 +292,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             finishCurrentTrack(false, "track_change");
             if (localMode) persistLocalPlayback(false);
             currentStationId = station.id;
+            radioJingleSchedule.reset(station.id);
             currentStationName = station.name;
             currentStationEngine = station.engine;
             localMode = false;
@@ -1239,6 +1242,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             JSONArray array = new JSONArray(readAll(connection.getInputStream()));
             for (int index = 0; index < array.length(); index++) {
                 JSONObject item = array.getJSONObject(index);
+                if (!item.optBoolean("enabled", true)) continue;
                 Station station = new Station();
                 station.id = item.getInt("id");
                 station.name = item.optString("name", "Adolar Radio");
@@ -1350,6 +1354,15 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 AdolarPrefs.setShuffleSession(this, stationId, nextSession);
             }
             JSONArray tracks = new JSONArray(readAll(connection.getInputStream()));
+            int jingleEvery = 0;
+            try {
+                jingleEvery = Integer.parseInt(connection.getHeaderField("X-Radio-Jingle-Every"));
+            } catch (NumberFormatException ignored) {
+                // Older servers do not advertise jingle settings.
+            }
+            if (tracks.length() > 0 && radioJingleSchedule.beginBatch(stationId, jingleEvery)) {
+                result.add(stationJingle(stationId));
+            }
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject item = tracks.getJSONObject(index);
                 Track track = new Track();
@@ -1366,6 +1379,9 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 track.hasLyrics = item.optBoolean("has_lyrics", false);
                 track.streamVersion = item.optString("stream_version", "");
                 result.add(track);
+                if (radioJingleSchedule.afterTrack(stationId, jingleEvery)) {
+                    result.add(stationJingle(stationId));
+                }
             }
             return new TrackBatchResult(result, TrackFetchFailure.NONE);
         } catch (java.net.SocketTimeoutException exception) {
@@ -1379,6 +1395,18 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 connection.disconnect();
             }
         }
+    }
+
+    private Track stationJingle(int stationId) {
+        Track jingle = new Track();
+        jingle.id = -stationId;
+        jingle.jingle = true;
+        jingle.title = "Jingle / Station ID";
+        jingle.artist = currentStationName;
+        jingle.album = "";
+        jingle.coverHash = "";
+        jingle.streamVersion = "";
+        return jingle;
     }
 
     private void startTrack(Track track) {
@@ -1437,6 +1465,13 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         }
         DefaultHttpDataSource.Factory upstreamFactory = new DefaultHttpDataSource.Factory()
                 .setDefaultRequestProperties(headers);
+        if (track.jingle) {
+            MediaItem item = new MediaItem.Builder()
+                    .setUri(Uri.parse(AdolarPrefs.apiUrl(this)
+                            + "/api/radio-stations/" + (-track.id) + "/jingle"))
+                    .setMediaId("jingle:" + (-track.id)).build();
+            return new ProgressiveMediaSource.Factory(upstreamFactory).createMediaSource(item);
+        }
         CacheDataSource.Factory dataSourceFactory = new CacheDataSource.Factory()
                 .setCache(audioCache)
                 .setUpstreamDataSourceFactory(upstreamFactory)
@@ -1740,7 +1775,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     }
 
     private void rememberCurrentTrack() {
-        if (currentTrack == null) return;
+        if (currentTrack == null || currentTrack.jingle) return;
         previousTracks.addLast(currentTrack);
         if (previousTracks.size() > 100) previousTracks.removeFirst();
     }
@@ -1748,7 +1783,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     private void sendListeningEvent(
             Track track, String eventType, String reason, long positionMs, long durationMs
     ) {
-        if (track.local || sessionCookie().isEmpty()) {
+        if (track.local || track.jingle || sessionCookie().isEmpty()) {
             return;
         }
         final int sequence = eventSequence.incrementAndGet();
@@ -1863,7 +1898,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     }
 
     private void requestLyricsIfMissing(Track track) {
-        if (track == null || track.hasLyrics) return;
+        if (track == null || track.jingle || track.hasLyrics) return;
         final int trackId = track.id;
         new Thread(() -> {
             HttpURLConnection connection = null;
@@ -2043,6 +2078,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
 
     private static final class Track {
         int id;
+        boolean jingle;
         long localId;
         boolean local;
         boolean localPlayCountRecorded;

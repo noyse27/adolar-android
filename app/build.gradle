@@ -15,7 +15,7 @@ android {
         // Adolar Radio app. The Java namespace intentionally stays stable
         // while the new product is developed.
         applicationId "net.polze.adolarnext"
-        minSdk 23
+        minSdk 24
         targetSdk 36
         versionCode 1
         versionName "0.1.0-next"

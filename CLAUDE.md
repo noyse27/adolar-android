@@ -12,5 +12,5 @@ Dieses Repository ist der eigenstaendige Android-Client fuer Adolar Next.
 ## Android-Kontext
 
 - Java-Namespace bleibt aktuell `net.polze.adolarradio`; die installierbare App-ID ist `net.polze.adolarnext`.
-- `minSdk` ist 23. Bei neuen APIs entweder kompatible Alternativen verwenden oder bewusst desugaring/SDK-Anhebung entscheiden.
+- `minSdk` ist 24 (angehoben wegen androidx.work 2.12). Bei neuen APIs entweder kompatible Alternativen verwenden oder bewusst desugaring/SDK-Anhebung entscheiden.
 - Cleartext HTTP ist absichtlich erlaubt, weil Adolar oft auf lokalen NAS-/LAN-URLs laeuft.

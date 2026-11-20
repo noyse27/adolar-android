@@ -51,12 +51,15 @@ import net.polze.adolarradio.local.LocalTrack;
 import net.polze.adolarradio.local.Id3PlayCount;
 import net.polze.adolarradio.local.TrackState;
 import net.polze.adolarradio.local.LastFmScrobble;
+import net.polze.adolarradio.local.LastFmSessionStore;
 import net.polze.adolarradio.local.AdolarScrobblerSessionStore;
 import net.polze.adolarradio.local.SmartFilter;
 import net.polze.adolarradio.local.DeviceTokenStore;
 import net.polze.adolarradio.local.SyncOutboxEntry;
 import net.polze.adolarradio.local.sync.SyncOutboxWorker;
+import net.polze.adolarradio.local.sync.LastFmApi;
 import net.polze.adolarradio.local.sync.LastFmScrobbleWorker;
+import net.polze.adolarradio.local.sync.AdolarScrobblerApi;
 import net.polze.adolarradio.local.sync.AdolarScrobblerScrobbleWorker;
 
 import org.json.JSONArray;
@@ -1456,8 +1459,43 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             track.localStartedAtUtc = System.currentTimeMillis() - startPositionMs;
             if (startPositionMs == 0L) {
                 enqueueLocalOutboxEvent(track, "started", null, 0, track.durationMs);
+                sendNowPlayingToScrobblers(track);
             }
         }
+    }
+
+    /**
+     * Fires "now playing" to whichever scrobble destination is connected -
+     * Last.fm or Adolar Scrobbler, mutually exclusive, see
+     * {@link AdolarScrobblerSessionStore}. Unlike the scrobble queue this is
+     * best-effort and never retried: by the time a retry would land, the
+     * track has usually already changed again.
+     */
+    private void sendNowPlayingToScrobblers(Track track) {
+        if (track.jingle) return;
+        String artist = track.artist == null ? "" : track.artist;
+        String title = track.title == null ? "" : track.title;
+        String album = track.album == null ? "" : track.album;
+        int durationSeconds = (int) Math.max(0L, track.durationMs / 1000L);
+        String lastFmSession = LastFmSessionStore.session(this);
+        String adolarScrobblerSession = AdolarScrobblerSessionStore.session(this);
+        if (lastFmSession.isEmpty() && adolarScrobblerSession.isEmpty()) return;
+        new Thread(() -> {
+            if (!lastFmSession.isEmpty()) {
+                try {
+                    LastFmApi.updateNowPlaying(artist, title, album, durationSeconds, lastFmSession);
+                } catch (Exception ignored) {
+                    // best-effort, see method doc
+                }
+            }
+            if (!adolarScrobblerSession.isEmpty()) {
+                try {
+                    AdolarScrobblerApi.updateNowPlaying(artist, title, album, durationSeconds, adolarScrobblerSession);
+                } catch (Exception ignored) {
+                    // best-effort, see method doc
+                }
+            }
+        }, "NowPlaying").start();
     }
 
     private MediaSource buildMediaSource(Track track) {

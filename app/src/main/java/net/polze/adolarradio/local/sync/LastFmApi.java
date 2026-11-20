@@ -42,6 +42,20 @@ public final class LastFmApi {
         return new Session(session.getString("name"), session.getString("key"));
     }
 
+    /** Best-effort "now playing" signal - never queued/retried, unlike scrobbles. */
+    public static void updateNowPlaying(String artist, String title, String album,
+                                         int durationSeconds, String sessionKey) throws Exception {
+        Map<String,String> p = new LinkedHashMap<>();
+        p.put("api_key", BuildConfig.LASTFM_API_KEY);
+        p.put("method", "track.updateNowPlaying");
+        p.put("sk", sessionKey);
+        p.put("artist", artist);
+        p.put("track", title);
+        if (album != null && !album.isEmpty()) p.put("album", album);
+        if (durationSeconds > 0) p.put("duration", String.valueOf(durationSeconds));
+        postSigned(p);
+    }
+
     public static List<Boolean> scrobble(List<LastFmScrobble> entries, String sessionKey) throws Exception {
         Map<String,String> p = new LinkedHashMap<>();
         p.put("api_key", BuildConfig.LASTFM_API_KEY);

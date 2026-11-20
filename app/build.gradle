@@ -17,8 +17,8 @@ android {
         applicationId "net.polze.adolarnext"
         minSdk 24
         targetSdk 36
-        versionCode 2
-        versionName "0.1.1-next"
+        versionCode 3
+        versionName "0.1.2-next"
 
         // Supply these through ~/.gradle/gradle.properties or CI secrets. The
         // Last.fm protocol requires the shared secret on native clients.

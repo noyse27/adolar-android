@@ -173,11 +173,57 @@ public interface LibraryDao {
     @Query("SELECT * FROM track_state")
     List<TrackState> getTrackStates();
 
+    @Query("SELECT * FROM track_state WHERE localTrackId=:trackId LIMIT 1")
+    TrackState getTrackState(long trackId);
+
+    @Query("SELECT COALESCE((SELECT tagPlayCountImported FROM track_state "
+            + "WHERE localTrackId=:trackId),0)")
+    boolean isTagPlayCountImported(long trackId);
+
+    @Query("INSERT INTO track_state(localTrackId,playCount,tagPlayCount,tagPlayCountImported,lastFmPlayCount,lastPlayedAt,favorite) "
+            + "VALUES(:trackId,0,:tagCount,1,0,NULL,0) ON CONFLICT(localTrackId) DO UPDATE "
+            + "SET tagPlayCount=MAX(tagPlayCount,:tagCount),tagPlayCountImported=1")
+    void importTagPlayCount(long trackId, int tagCount);
+
+    @Query("INSERT INTO track_state(localTrackId,playCount,tagPlayCount,lastFmPlayCount,lastFmCheckedAt,lastPlayedAt,favorite) "
+            + "VALUES(:trackId,0,0,:lastFmCount,:checkedAt,NULL,0) ON CONFLICT(localTrackId) DO UPDATE "
+            + "SET lastFmPlayCount=MAX(lastFmPlayCount,:lastFmCount),lastFmCheckedAt=:checkedAt")
+    void importLastFmPlayCount(long trackId, int lastFmCount, long checkedAt);
+
+    @Query("SELECT t.* FROM local_tracks t LEFT JOIN track_state s ON s.localTrackId=t.id "
+            + "WHERE t.missing=0 AND (s.lastFmCheckedAt IS NULL OR s.lastFmCheckedAt<:before) "
+            + "ORDER BY t.id LIMIT :limit")
+    List<LocalTrack> getTracksNeedingLastFmCount(long before, int limit);
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    long insertLastFmScrobble(LastFmScrobble scrobble);
+
+    @Query("SELECT * FROM lastfm_scrobbles WHERE destination=:destination "
+            + "AND state IN ('pending','sending') "
+            + "AND (nextRetryAt IS NULL OR nextRetryAt<=:now) ORDER BY startedAtUtc LIMIT :limit")
+    List<LastFmScrobble> getSendableLastFmScrobbles(String destination, long now, int limit);
+
+    @Query("UPDATE lastfm_scrobbles SET state='sending' WHERE eventId=:eventId")
+    void markLastFmSending(String eventId);
+
+    @Query("DELETE FROM lastfm_scrobbles WHERE eventId=:eventId")
+    void deleteLastFmScrobble(String eventId);
+
+    @Query("UPDATE lastfm_scrobbles SET state='pending',attempts=attempts+1,lastError=:error,"
+            + "nextRetryAt=:retryAt WHERE eventId=:eventId")
+    void retryLastFmScrobble(String eventId, String error, long retryAt);
+
+    // Only one scrobble destination is ever active at a time (see
+    // NextActivity's login flow) - drop whatever the other one still owed
+    // when switching, rather than let it pile up undeliverable forever.
+    @Query("DELETE FROM lastfm_scrobbles WHERE destination!=:activeDestination")
+    void dropPendingScrobblesForOtherDestinations(String activeDestination);
+
     @Query("SELECT localTrackId FROM track_state WHERE favorite=1")
     List<Long> getFavoriteTrackIds();
 
-    @Query("INSERT INTO track_state(localTrackId,playCount,lastPlayedAt,favorite) "
-            + "VALUES(:trackId,0,NULL,:favorite) ON CONFLICT(localTrackId) DO UPDATE "
+    @Query("INSERT INTO track_state(localTrackId,playCount,tagPlayCount,lastFmPlayCount,lastPlayedAt,favorite) "
+            + "VALUES(:trackId,0,0,0,NULL,:favorite) ON CONFLICT(localTrackId) DO UPDATE "
             + "SET favorite=:favorite")
     void setFavorite(long trackId, boolean favorite);
 
@@ -188,8 +234,8 @@ public interface LibraryDao {
         insertOutboxEntry(entry);
     }
 
-    @Query("INSERT INTO track_state(localTrackId,playCount,lastPlayedAt,favorite) "
-            + "VALUES(:trackId,1,:playedAt,0) ON CONFLICT(localTrackId) DO UPDATE "
+    @Query("INSERT INTO track_state(localTrackId,playCount,tagPlayCount,lastFmPlayCount,lastPlayedAt,favorite) "
+            + "VALUES(:trackId,1,0,0,:playedAt,0) ON CONFLICT(localTrackId) DO UPDATE "
             + "SET playCount=playCount+1,lastPlayedAt=:playedAt")
     void recordCompletedPlay(long trackId, long playedAt);
 
@@ -208,7 +254,8 @@ public interface LibraryDao {
     List<LocalTrack> getRecentlyAddedTracks();
 
     @Query("SELECT t.* FROM local_tracks t JOIN track_state s ON s.localTrackId=t.id "
-            + "WHERE t.missing=0 AND s.playCount>0 ORDER BY s.playCount DESC, "
+            + "WHERE t.missing=0 AND MAX(s.playCount,s.tagPlayCount,s.lastFmPlayCount)>0 "
+            + "ORDER BY MAX(s.playCount,s.tagPlayCount,s.lastFmPlayCount) DESC, "
             + "s.lastPlayedAt DESC LIMIT 500")
     List<LocalTrack> getMostPlayedTracks();
 
@@ -218,12 +265,14 @@ public interface LibraryDao {
     List<LocalTrack> getRecentlyPlayedTracks();
 
     @Query("SELECT t.* FROM local_tracks t JOIN track_state s ON s.localTrackId=t.id "
-            + "WHERE t.missing=0 AND s.playCount>0 ORDER BY s.playCount ASC, "
+            + "WHERE t.missing=0 AND MAX(s.playCount,s.tagPlayCount,s.lastFmPlayCount)>0 "
+            + "ORDER BY MAX(s.playCount,s.tagPlayCount,s.lastFmPlayCount) ASC, "
             + "s.lastPlayedAt ASC LIMIT 500")
     List<LocalTrack> getLeastPlayedTracks();
 
     @Query("SELECT t.* FROM local_tracks t LEFT JOIN track_state s ON s.localTrackId=t.id "
-            + "WHERE t.missing=0 AND COALESCE(s.playCount,0)=0 "
+            + "WHERE t.missing=0 AND MAX(COALESCE(s.playCount,0),"
+            + "COALESCE(s.tagPlayCount,0),COALESCE(s.lastFmPlayCount,0))<1 "
             + "ORDER BY t.artist COLLATE NOCASE, t.title COLLATE NOCASE LIMIT 500")
     List<LocalTrack> getNeverPlayedTracks();
 

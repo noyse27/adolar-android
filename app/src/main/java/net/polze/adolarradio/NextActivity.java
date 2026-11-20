@@ -14,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.InputType;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaControllerCompat;
@@ -23,6 +24,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
+import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -32,6 +34,7 @@ import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.text.Editable;
@@ -58,8 +61,20 @@ import net.polze.adolarradio.local.LocalLibraryRepository;
 import net.polze.adolarradio.local.LocalLibraryRepository.FacetType;
 import net.polze.adolarradio.local.LocalLibraryScanner;
 import net.polze.adolarradio.local.LocalTrack;
+import net.polze.adolarradio.local.SmartFilter;
+import net.polze.adolarradio.local.LastFmSessionStore;
+import net.polze.adolarradio.local.AdolarScrobblerSessionStore;
+import net.polze.adolarradio.local.LastFmScrobble;
+import net.polze.adolarradio.local.LibraryDao;
+import net.polze.adolarradio.local.LocalLibraryDatabase;
+import net.polze.adolarradio.local.sync.LastFmApi;
+import net.polze.adolarradio.local.sync.LastFmPlayCountWorker;
+import net.polze.adolarradio.local.sync.LastFmScrobbleWorker;
+import net.polze.adolarradio.local.sync.AdolarScrobblerApi;
+import net.polze.adolarradio.local.sync.AdolarScrobblerScrobbleWorker;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -745,6 +760,63 @@ public class NextActivity extends ComponentActivity {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(24), dp(8), dp(24), 0);
+        // Last.fm and Adolar Scrobbler are mutually exclusive - logging into
+        // either one clears the other's stored session. Both view pairs are
+        // declared before either listener is attached so each can update
+        // the other's status/button text on success.
+        TextView lastFmStatus = text(
+                LastFmSessionStore.user(this).isEmpty()
+                        ? getString(R.string.lastfm_direct_signed_out)
+                        : getString(R.string.lastfm_direct_signed_in, LastFmSessionStore.user(this)),
+                15, R.color.text_primary
+        );
+        panel.addView(lastFmStatus);
+        Button lastFm = new Button(this);
+        lastFm.setAllCaps(false);
+        lastFm.setText(LastFmSessionStore.user(this).isEmpty()
+                ? R.string.lastfm_direct_connect : R.string.lastfm_direct_disconnect);
+        LinearLayout.LayoutParams lastFmParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)
+        );
+        lastFmParams.setMargins(0, dp(12), 0, dp(8));
+        panel.addView(lastFm, lastFmParams);
+
+        TextView asbStatus = text(
+                AdolarScrobblerSessionStore.user(this).isEmpty()
+                        ? getString(R.string.adolar_scrobbler_signed_out)
+                        : getString(R.string.adolar_scrobbler_signed_in, AdolarScrobblerSessionStore.user(this)),
+                15, R.color.text_primary
+        );
+        panel.addView(asbStatus);
+        Button asb = new Button(this);
+        asb.setAllCaps(false);
+        asb.setText(AdolarScrobblerSessionStore.user(this).isEmpty()
+                ? R.string.adolar_scrobbler_connect : R.string.adolar_scrobbler_disconnect);
+        LinearLayout.LayoutParams asbParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)
+        );
+        asbParams.setMargins(0, dp(12), 0, dp(24));
+        panel.addView(asb, asbParams);
+
+        lastFm.setOnClickListener(view -> {
+            if (!LastFmSessionStore.user(this).isEmpty()) {
+                LastFmSessionStore.clear(this);
+                lastFmStatus.setText(R.string.lastfm_direct_signed_out);
+                lastFm.setText(R.string.lastfm_direct_connect);
+            } else {
+                showLastFmLogin(lastFmStatus, lastFm, asbStatus, asb);
+            }
+        });
+        asb.setOnClickListener(view -> {
+            if (!AdolarScrobblerSessionStore.user(this).isEmpty()) {
+                AdolarScrobblerSessionStore.clear(this);
+                asbStatus.setText(R.string.adolar_scrobbler_signed_out);
+                asb.setText(R.string.adolar_scrobbler_connect);
+            } else {
+                showAdolarScrobblerLogin(asbStatus, asb, lastFmStatus, lastFm);
+            }
+        });
+
         TextView description = text(
                 getString(R.string.artwork_settings_description), 15, R.color.text_primary
         );
@@ -782,11 +854,99 @@ public class NextActivity extends ComponentActivity {
         ));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(R.string.artwork_settings_title)
+                .setTitle(R.string.local_settings)
                 .setView(panel)
                 .setPositiveButton(android.R.string.ok, null)
                 .create();
         dialog.show();
+    }
+
+    private void showLastFmLogin(TextView status, Button action, TextView otherStatus, Button otherAction) {
+        if (!LastFmApi.configured()) {
+            Toast.makeText(this, R.string.lastfm_direct_not_configured, Toast.LENGTH_LONG).show();
+            return;
+        }
+        LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(24),dp(8),dp(24),0);
+        EditText user=new EditText(this); user.setHint(R.string.username_hint); form.addView(user);
+        EditText password=new EditText(this); password.setHint(R.string.password_hint);
+        password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        form.addView(password);
+        AlertDialog login=new AlertDialog.Builder(this).setTitle(R.string.lastfm_direct_connect)
+                .setView(form).setPositiveButton(R.string.login,null)
+                .setNegativeButton(android.R.string.cancel,null).create();
+        login.setOnShowListener(ignored -> login.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String name=user.getText().toString().trim(), secret=password.getText().toString();
+            if(name.isEmpty()||secret.isEmpty()) return;
+            login.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            new Thread(() -> {
+                try {
+                    LastFmApi.Session session=LastFmApi.login(name,secret);
+                    // Only one scrobble destination is active at a time.
+                    AdolarScrobblerSessionStore.clear(this);
+                    LibraryDao dao=LocalLibraryDatabase.get(this).libraryDao();
+                    dao.dropPendingScrobblesForOtherDestinations(LastFmScrobble.DEST_LASTFM);
+                    LastFmSessionStore.set(this,session.username,session.key);
+                    runOnUiThread(() -> {
+                        status.setText(getString(R.string.lastfm_direct_signed_in,session.username));
+                        action.setText(R.string.lastfm_direct_disconnect); login.dismiss();
+                        otherStatus.setText(R.string.adolar_scrobbler_signed_out);
+                        otherAction.setText(R.string.adolar_scrobbler_connect);
+                        LastFmScrobbleWorker.enqueue(this); LastFmPlayCountWorker.enqueue(this);
+                    });
+                } catch(Exception error) {
+                    runOnUiThread(() -> {
+                        login.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                        Toast.makeText(this,R.string.lastfm_direct_login_failed,Toast.LENGTH_LONG).show();
+                    });
+                }
+            },"LastFmLogin").start();
+        }));
+        login.show();
+    }
+
+    private void showAdolarScrobblerLogin(TextView status, Button action, TextView otherStatus, Button otherAction) {
+        if (!AdolarScrobblerApi.configured()) {
+            Toast.makeText(this, R.string.adolar_scrobbler_not_configured, Toast.LENGTH_LONG).show();
+            return;
+        }
+        LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(24),dp(8),dp(24),0);
+        EditText user=new EditText(this); user.setHint(R.string.username_hint); form.addView(user);
+        EditText password=new EditText(this); password.setHint(R.string.password_hint);
+        password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        form.addView(password);
+        AlertDialog login=new AlertDialog.Builder(this).setTitle(R.string.adolar_scrobbler_connect)
+                .setView(form).setPositiveButton(R.string.login,null)
+                .setNegativeButton(android.R.string.cancel,null).create();
+        login.setOnShowListener(ignored -> login.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String name=user.getText().toString().trim(), secret=password.getText().toString();
+            if(name.isEmpty()||secret.isEmpty()) return;
+            login.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            new Thread(() -> {
+                try {
+                    AdolarScrobblerApi.Session session=AdolarScrobblerApi.login(name,secret);
+                    // Only one scrobble destination is active at a time.
+                    LastFmSessionStore.clear(this);
+                    LibraryDao dao=LocalLibraryDatabase.get(this).libraryDao();
+                    dao.dropPendingScrobblesForOtherDestinations(LastFmScrobble.DEST_ADOLAR_SCROBBLER);
+                    AdolarScrobblerSessionStore.set(this,session.username,session.key);
+                    runOnUiThread(() -> {
+                        status.setText(getString(R.string.adolar_scrobbler_signed_in,session.username));
+                        action.setText(R.string.adolar_scrobbler_disconnect); login.dismiss();
+                        otherStatus.setText(R.string.lastfm_direct_signed_out);
+                        otherAction.setText(R.string.lastfm_direct_connect);
+                        AdolarScrobblerScrobbleWorker.enqueue(this);
+                    });
+                } catch(Exception error) {
+                    runOnUiThread(() -> {
+                        login.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                        Toast.makeText(this,R.string.adolar_scrobbler_login_failed,Toast.LENGTH_LONG).show();
+                    });
+                }
+            },"AdolarScrobblerLogin").start();
+        }));
+        login.show();
     }
 
     private String artworkStatusText() {
@@ -1035,6 +1195,10 @@ public class NextActivity extends ComponentActivity {
     }
 
     private void showCreatePlaylistDialog(boolean smart) {
+        if (smart) {
+            showSmartPlaylistDialog(null, false);
+            return;
+        }
         LinearLayout form = new LinearLayout(this);
         form.setOrientation(LinearLayout.VERTICAL);
         form.setPadding(dp(24), dp(8), dp(24), 0);
@@ -1077,6 +1241,254 @@ public class NextActivity extends ComponentActivity {
         dialog.show();
     }
 
+    private void showSmartPlaylistDialog(LocalPlaylist playlist, boolean classic) {
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(24), dp(8), dp(24), 0);
+        EditText name = new EditText(this);
+        name.setHint(R.string.playlist_name_hint);
+        if (playlist != null) name.setText(playlist.name);
+        form.addView(name);
+
+        EditText prompt = null;
+        Spinner match = null;
+        LinearLayout criteria = null;
+        EditText limit = null;
+        Spinner sort = null;
+        if (!classic) {
+            prompt = new EditText(this);
+            prompt.setHint(R.string.playlist_rule_hint);
+            prompt.setMinLines(2);
+            if (playlist != null) prompt.setText(SmartFilter.smartText(playlist.filterJson));
+            form.addView(prompt);
+        } else {
+            limit = new EditText(this);
+            limit.setHint("Liedanzahl");
+            limit.setInputType(InputType.TYPE_CLASS_NUMBER);
+            limit.setText(String.valueOf(playlist == null
+                    ? 100 : SmartFilter.classicLimit(playlist.filterJson)));
+            form.addView(limit);
+            sort = spinner(new String[]{"Zufall", "Titel", "Album", "Interpret",
+                    "Zuletzt gespielt", "Meistgespielt", "Am seltensten gespielt",
+                    "Kürzlich hinzugefügt"});
+            form.addView(sort);
+            if (playlist != null) {
+                String[] savedSortKeys = {"random", "title", "album", "artist",
+                        "recent_played", "most_played", "least_played", "recent_added"};
+                String savedSort = SmartFilter.classicSort(playlist.filterJson);
+                for (int index = 0; index < savedSortKeys.length; index++) {
+                    if (savedSortKeys[index].equals(savedSort)) sort.setSelection(index);
+                }
+            }
+            match = spinner(new String[]{
+                    getString(R.string.playlist_match_all),
+                    getString(R.string.playlist_match_any)
+            });
+            form.addView(match);
+            criteria = new LinearLayout(this);
+            criteria.setOrientation(LinearLayout.VERTICAL);
+            form.addView(criteria);
+            List<SmartFilter.ClassicRule> savedRules = playlist == null
+                    ? Collections.emptyList() : SmartFilter.classicRules(playlist.filterJson);
+            if (savedRules.isEmpty()) addClassicCriterion(criteria, null);
+            else for (SmartFilter.ClassicRule savedRule : savedRules) {
+                addClassicCriterion(criteria, savedRule);
+            }
+            if (playlist != null && "any".equals(SmartFilter.classicMode(playlist.filterJson))) {
+                match.setSelection(1);
+            }
+            Button add = new Button(this);
+            add.setText(R.string.playlist_add_criterion);
+            LinearLayout finalCriteria = criteria;
+            add.setOnClickListener(view -> addClassicCriterion(finalCriteria, null));
+            form.addView(add);
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(form);
+        EditText finalPrompt = prompt;
+        EditText finalLimit = limit;
+        Spinner finalSort = sort;
+        Spinner finalMatch = match;
+        LinearLayout finalCriteria = criteria;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(playlist == null ? R.string.playlist_smart : R.string.playlist_edit)
+                .setView(scroll)
+                .setNeutralButton(classic ? R.string.playlist_prompt : R.string.playlist_classic, null)
+                .setPositiveButton(playlist == null ? R.string.playlist_create : R.string.playlist_save, null)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                dialog.dismiss();
+                showSmartPlaylistDialog(playlist, !classic);
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String filterJson;
+                try {
+                    if (classic) {
+                        List<SmartFilter.ClassicRule> rules = new ArrayList<>();
+                        for (int index = 0; index < finalCriteria.getChildCount(); index++) {
+                            Object tag = finalCriteria.getChildAt(index).getTag();
+                            if (tag instanceof ClassicEditorRow) rules.add(((ClassicEditorRow) tag).toRule());
+                        }
+                        String[] sortKeys = {"random", "title", "album", "artist",
+                                "recent_played", "most_played", "least_played", "recent_added"};
+                        int maximum;
+                        try {
+                            maximum = Integer.parseInt(finalLimit.getText().toString().trim());
+                        } catch (NumberFormatException error) {
+                            finalLimit.setError("Bitte eine Liedanzahl eingeben.");
+                            return;
+                        }
+                        filterJson = SmartFilter.classicToJson(
+                                finalMatch.getSelectedItemPosition() == 1 ? "any" : "all", rules,
+                                maximum, sortKeys[finalSort.getSelectedItemPosition()]
+                        );
+                    } else {
+                        filterJson = SmartFilter.parseToJson(finalPrompt.getText().toString());
+                    }
+                } catch (SmartFilter.ParseException error) {
+                    name.setError(error.getMessage());
+                    return;
+                }
+                LocalLibraryRepository.MutationCallback callback = (success, message) -> {
+                    if (!success) {
+                        name.setError(message);
+                        return;
+                    }
+                    dialog.dismiss();
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                    showPlaylists();
+                };
+                if (playlist == null) {
+                    repository.createClassicPlaylist(name.getText().toString(), filterJson, callback);
+                } else {
+                    repository.updatePlaylist(playlist, name.getText().toString(), filterJson, callback);
+                }
+            });
+        });
+        dialog.show();
+    }
+
+    private void addClassicCriterion(LinearLayout parent, SmartFilter.ClassicRule initial) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(0, dp(8), 0, dp(8));
+        String[] labels = {"Titel", "Album", "Interpret", "Genre", "Jahr",
+                "Wiedergabezähler", "Zuletzt gespielt", "Hinzugefügt"};
+        String[] keys = {"title", "album", "artist", "genre", "year",
+                "playcount", "lastplayed", "added"};
+        Spinner field = spinner(labels);
+        Spinner operator = spinner(new String[]{"enthält", "enthält nicht", "ist", "ist nicht"});
+        EditText value = new EditText(this);
+        value.setHint("Wert");
+        Spinner unit = spinner(new String[]{"Tage", "Wochen", "Monate", "Jahre"});
+        Button remove = new Button(this);
+        remove.setText("−");
+        card.addView(field);
+        card.addView(operator);
+        card.addView(value);
+        card.addView(unit);
+        card.addView(remove);
+        ClassicEditorRow editor = new ClassicEditorRow(field, operator, value, unit, keys);
+        card.setTag(editor);
+        field.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) {
+                editor.updateOperators();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) { }
+        });
+        remove.setOnClickListener(view -> {
+            if (parent.getChildCount() > 1) parent.removeView(card);
+        });
+        parent.addView(card);
+        editor.updateOperators();
+        if (initial != null) editor.apply(initial);
+    }
+
+    private Spinner spinner(String[] values) {
+        Spinner spinner = new Spinner(this);
+        spinner.setAdapter(new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_dropdown_item, values
+        ));
+        return spinner;
+    }
+
+    private final class ClassicEditorRow {
+        final Spinner field;
+        final Spinner operator;
+        final EditText value;
+        final Spinner unit;
+        final String[] keys;
+        String[] opKeys = {"contains", "not_contains", "equals", "not_equals"};
+
+        ClassicEditorRow(Spinner field, Spinner operator, EditText value, Spinner unit, String[] keys) {
+            this.field = field;
+            this.operator = operator;
+            this.value = value;
+            this.unit = unit;
+            this.keys = keys;
+        }
+
+        void updateOperators() {
+            String key = keys[field.getSelectedItemPosition()];
+            String[] labels;
+            if ("added".equals(key) || "lastplayed".equals(key)) {
+                labels = new String[]{"liegt innerhalb der letzten", "liegt außerhalb der letzten"};
+                opKeys = new String[]{"within_last", "before"};
+                unit.setVisibility(View.VISIBLE);
+                value.setInputType(InputType.TYPE_CLASS_NUMBER);
+            } else if ("year".equals(key) || "playcount".equals(key)) {
+                labels = new String[]{"ist", "ist nicht", "ist größer als", "ist kleiner als"};
+                opKeys = new String[]{"eq", "ne", "gt", "lt"};
+                unit.setVisibility(View.GONE);
+                value.setInputType(InputType.TYPE_CLASS_NUMBER);
+            } else {
+                labels = new String[]{"enthält", "enthält nicht", "heißt", "heißt nicht",
+                        "beginnt mit", "endet mit"};
+                opKeys = new String[]{"contains", "not_contains", "equals", "not_equals",
+                        "starts_with", "ends_with"};
+                unit.setVisibility(View.GONE);
+                value.setInputType(InputType.TYPE_CLASS_TEXT);
+            }
+            operator.setAdapter(new ArrayAdapter<>(
+                    NextActivity.this, android.R.layout.simple_spinner_dropdown_item, labels
+            ));
+        }
+
+        SmartFilter.ClassicRule toRule() {
+            String[] units = {"days", "weeks", "months", "years"};
+            return new SmartFilter.ClassicRule(
+                    keys[field.getSelectedItemPosition()],
+                    opKeys[operator.getSelectedItemPosition()],
+                    value.getText().toString(), units[unit.getSelectedItemPosition()]
+            );
+        }
+
+
+        void apply(SmartFilter.ClassicRule rule) {
+            for (int index = 0; index < keys.length; index++) {
+                if (keys[index].equals(rule.field)) {
+                    field.setSelection(index);
+                    break;
+                }
+            }
+            updateOperators();
+            for (int index = 0; index < opKeys.length; index++) {
+                if (opKeys[index].equals(rule.op)) {
+                    operator.setSelection(index);
+                    break;
+                }
+            }
+            value.setText(rule.value);
+            String[] units = {"days", "weeks", "months", "years"};
+            for (int index = 0; index < units.length; index++) {
+                if (units[index].equals(rule.unit)) unit.setSelection(index);
+            }
+        }
+    }
+
     private void showAddToPlaylist(LocalTrack track) {
         repository.loadPlaylists(playlists -> {
             List<LocalPlaylist> writable = new ArrayList<>();
@@ -1103,6 +1515,88 @@ public class NextActivity extends ComponentActivity {
                     .setNegativeButton(android.R.string.cancel, null)
                     .show();
         });
+    }
+
+    private void showPlaylistActions(LocalPlaylist playlist, View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add(R.string.playlist_play);
+        menu.getMenu().add(R.string.playlist_shuffle);
+        if (!playlist.isSystem) {
+            menu.getMenu().add(R.string.playlist_edit);
+            menu.getMenu().add(R.string.playlist_rename);
+            menu.getMenu().add(R.string.playlist_delete);
+        }
+        menu.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            if (title.equals(getString(R.string.playlist_play))) {
+                playPlaylist(playlist, false);
+            } else if (title.equals(getString(R.string.playlist_shuffle))) {
+                playPlaylist(playlist, true);
+            } else if (title.equals(getString(R.string.playlist_edit))) {
+                if ("smart".equals(playlist.type)) {
+                    showSmartPlaylistDialog(playlist, SmartFilter.isClassic(playlist.filterJson));
+                }
+                else showRenamePlaylist(playlist);
+            } else if (title.equals(getString(R.string.playlist_rename))) {
+                showRenamePlaylist(playlist);
+            } else if (title.equals(getString(R.string.playlist_delete))) {
+                confirmDeletePlaylist(playlist);
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private void playPlaylist(LocalPlaylist playlist, boolean shuffle) {
+        repository.loadPlaylistTracks(playlist, tracks -> {
+            if (tracks.isEmpty()) {
+                Toast.makeText(this, R.string.playlist_empty, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            List<LocalTrack> queue = new ArrayList<>(tracks);
+            if (shuffle) Collections.shuffle(queue);
+            openPlaylist(playlist);
+            adapter.setTracks(queue);
+            playLocalTrack(queue.get(0).id);
+        });
+    }
+
+    private void showRenamePlaylist(LocalPlaylist playlist) {
+        EditText name = new EditText(this);
+        name.setText(playlist.name);
+        name.setSelectAllOnFocus(true);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.playlist_rename)
+                .setView(name)
+                .setPositiveButton(R.string.playlist_save, null)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> repository.updatePlaylist(
+                        playlist, name.getText().toString(), null, (success, message) -> {
+                            if (!success) {
+                                name.setError(message);
+                                return;
+                            }
+                            dialog.dismiss();
+                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                            showPlaylists();
+                        }
+                )));
+        dialog.show();
+    }
+
+    private void confirmDeletePlaylist(LocalPlaylist playlist) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.playlist_delete)
+                .setMessage("„" + playlist.name + "“ wirklich löschen?")
+                .setPositiveButton(R.string.playlist_delete, (dialog, which) ->
+                        repository.deletePlaylist(playlist, (success, message) -> {
+                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                            if (success) showPlaylists();
+                        }))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     private void showTrackActions(LocalTrack track) {
@@ -2027,7 +2521,7 @@ public class NextActivity extends ComponentActivity {
             labels.addView(name);
             labels.addView(type);
             row.addView(labels, new LinearLayout.LayoutParams(0, dp(64), 1f));
-            TextView arrow = text("›", 30, R.color.text_secondary);
+            TextView arrow = text("⋮", 30, R.color.text_secondary);
             arrow.setGravity(Gravity.CENTER);
             row.addView(arrow, new LinearLayout.LayoutParams(dp(40), dp(64)));
             return new PlaylistViewHolder(row, icon, name, type);
@@ -2042,6 +2536,11 @@ public class NextActivity extends ComponentActivity {
                     ? "Systemliste"
                     : "smart".equals(playlist.type) ? "Intelligent" : "Standard");
             holder.itemView.setOnClickListener(view -> clickListener.onClick(playlist));
+            holder.arrow.setOnClickListener(view -> showPlaylistActions(playlist, holder.arrow));
+            holder.itemView.setOnLongClickListener(view -> {
+                showPlaylistActions(playlist, holder.arrow);
+                return true;
+            });
         }
 
         @Override
@@ -2054,12 +2553,14 @@ public class NextActivity extends ComponentActivity {
         final TextView icon;
         final TextView name;
         final TextView type;
+        final TextView arrow;
 
         PlaylistViewHolder(View itemView, TextView icon, TextView name, TextView type) {
             super(itemView);
             this.icon = icon;
             this.name = name;
             this.type = type;
+            this.arrow = (TextView) ((ViewGroup) itemView).getChildAt(2);
         }
     }
 

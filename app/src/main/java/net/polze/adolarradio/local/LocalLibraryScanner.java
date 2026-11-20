@@ -232,6 +232,7 @@ public final class LocalLibraryScanner {
                 if (existing != null && existing.modifiedAt == modified
                         && existing.sizeBytes == size && !existing.missing) {
                     dao.touchTrack(existing.id, scanId, now);
+                    importPlayCountOnce(existing.id, documentUri, displayName, mimeType);
                     existing.lastSeenScan = scanId;
                     existing.missing = false;
                     progress.unchanged++;
@@ -279,6 +280,7 @@ public final class LocalLibraryScanner {
                     track.lastSeenScan = scanId;
                     track.missing = false;
                     saveTrack(track, existing, byDocumentId, byDocumentUri);
+                    importPlayCount(track.id, documentUri, displayName, mimeType);
                     progress.indexed++;
                 }
                 if (progress.visited == 1 || progress.visited % 100 == 0) {
@@ -414,6 +416,7 @@ public final class LocalLibraryScanner {
         if (existing != null && existing.modifiedAt == modified
                 && existing.sizeBytes == size && !existing.missing) {
             dao.touchTrack(existing.id, scanId, now);
+            importPlayCountOnce(existing.id, documentUri, displayName, mimeType);
             existing.lastSeenScan = scanId;
             existing.missing = false;
             progress.unchanged++;
@@ -438,6 +441,7 @@ public final class LocalLibraryScanner {
             track.lastSeenScan = scanId;
             track.missing = false;
             saveTrack(track, existing, byDocumentId, byDocumentUri);
+            importPlayCount(track.id, documentUri, displayName, mimeType);
             progress.indexed++;
         } catch (Exception error) {
             progress.errors++;
@@ -459,6 +463,27 @@ public final class LocalLibraryScanner {
         }
         if (track.documentId != null) byDocumentId.put(track.documentId, track);
         byDocumentUri.put(track.documentUri, track);
+    }
+
+    private void importPlayCountOnce(
+            long trackId, Uri uri, String displayName, String mimeType
+    ) {
+        if (!dao.isTagPlayCountImported(trackId)) {
+            importPlayCount(trackId, uri, displayName, mimeType);
+        }
+    }
+
+    private void importPlayCount(
+            long trackId, Uri uri, String displayName, String mimeType
+    ) {
+        if (!isMp3(displayName, mimeType)) return;
+        dao.importTagPlayCount(trackId, Id3PlayCount.read(context, uri));
+    }
+
+    private static boolean isMp3(String name, String mime) {
+        if (mime != null && ("audio/mpeg".equalsIgnoreCase(mime)
+                || "audio/mp3".equalsIgnoreCase(mime))) return true;
+        return name != null && name.toLowerCase(Locale.ROOT).endsWith(".mp3");
     }
 
     private LocalTrack readMetadata(Uri uri, String displayName) throws Exception {

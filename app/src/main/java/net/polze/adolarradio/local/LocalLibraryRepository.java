@@ -6,6 +6,8 @@ import android.os.Handler;
 import android.os.Looper;
 
 import net.polze.adolarradio.local.sync.SyncOutboxWorker;
+import net.polze.adolarradio.local.sync.LastFmPlayCountWorker;
+import net.polze.adolarradio.local.sync.LastFmPlayCountWorker;
 
 import org.json.JSONObject;
 
@@ -157,6 +159,53 @@ public final class LocalLibraryRepository {
         });
     }
 
+    public void createClassicPlaylist(
+            String name, String filterJson, MutationCallback callback
+    ) {
+        savePlaylist(null, name, filterJson, callback);
+    }
+
+    public void updatePlaylist(
+            LocalPlaylist playlist, String name, String filterJson, MutationCallback callback
+    ) {
+        savePlaylist(playlist, name, filterJson, callback);
+    }
+
+    private void savePlaylist(
+            LocalPlaylist existing, String name, String filterJson, MutationCallback callback
+    ) {
+        queryExecutor.execute(() -> {
+            String cleanName = name == null ? "" : name.trim();
+            if (cleanName.isEmpty()) {
+                mainHandler.post(() -> callback.onComplete(false, "Der Name fehlt."));
+                return;
+            }
+            LocalPlaylist playlist = existing == null ? new LocalPlaylist() : existing;
+            playlist.name = cleanName;
+            playlist.updatedAt = System.currentTimeMillis();
+            if (existing == null) playlist.createdAt = playlist.updatedAt;
+            if (filterJson != null) {
+                playlist.type = "smart";
+                playlist.filterJson = filterJson;
+            }
+            if (existing == null) dao.insertPlaylist(playlist); else dao.updatePlaylist(playlist);
+            mainHandler.post(() -> callback.onComplete(
+                    true, existing == null ? "Playlist erstellt." : "Playlist gespeichert."
+            ));
+        });
+    }
+
+    public void deletePlaylist(LocalPlaylist playlist, MutationCallback callback) {
+        queryExecutor.execute(() -> {
+            if (playlist == null || playlist.isSystem) {
+                mainHandler.post(() -> callback.onComplete(false, "Systemlisten können nicht gelöscht werden."));
+                return;
+            }
+            dao.deletePlaylist(playlist);
+            mainHandler.post(() -> callback.onComplete(true, "Playlist gelöscht."));
+        });
+    }
+
     public void loadPlaylistTracks(LocalPlaylist playlist, TracksCallback callback) {
         queryExecutor.execute(() -> {
             List<LocalTrack> tracks;
@@ -275,6 +324,7 @@ public final class LocalLibraryRepository {
                     treeUri,
                     progress -> mainHandler.post(() -> callback.onProgress(progress))
             );
+            LastFmPlayCountWorker.enqueue(appContext);
             mainHandler.post(() -> callback.onComplete(result));
         });
     }
@@ -299,6 +349,7 @@ public final class LocalLibraryRepository {
                 aggregate.errors += result.errors;
                 aggregate.missing += result.missing;
             }
+            LastFmPlayCountWorker.enqueue(appContext);
             mainHandler.post(() -> callback.onComplete(aggregate));
         });
     }

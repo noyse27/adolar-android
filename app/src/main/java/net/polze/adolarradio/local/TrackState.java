@@ -20,6 +20,12 @@ public class TrackState {
     @PrimaryKey
     public long localTrackId;
     public int playCount;
+    /** Last count imported from an ID3 POPM frame. */
+    public int tagPlayCount;
+    public boolean tagPlayCountImported;
+    /** Last user playcount returned by the connected Last.fm account. */
+    public int lastFmPlayCount;
+    public Long lastFmCheckedAt;
     public Long lastPlayedAt;
     public boolean favorite;
 }

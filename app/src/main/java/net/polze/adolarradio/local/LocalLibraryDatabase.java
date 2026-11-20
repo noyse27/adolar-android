@@ -18,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase;
                 PlaylistTrack.class,
                 SyncOutboxEntry.class,
                 SyncReceipt.class
+                , LastFmScrobble.class
         },
-        version = 3,
+        version = 6,
         exportSchema = true
 )
 public abstract class LocalLibraryDatabase extends RoomDatabase {
@@ -74,6 +75,39 @@ public abstract class LocalLibraryDatabase extends RoomDatabase {
         }
     };
 
+    public static final Migration MIGRATION_3_4 = new Migration(3, 4) {
+        @Override
+        public void migrate(@NonNull SupportSQLiteDatabase database) {
+            database.execSQL("ALTER TABLE `track_state` ADD COLUMN `tagPlayCount` INTEGER NOT NULL DEFAULT 0");
+            database.execSQL("ALTER TABLE `track_state` ADD COLUMN `tagPlayCountImported` INTEGER NOT NULL DEFAULT 0");
+            database.execSQL("ALTER TABLE `track_state` ADD COLUMN `lastFmPlayCount` INTEGER NOT NULL DEFAULT 0");
+        }
+    };
+
+    public static final Migration MIGRATION_4_5 = new Migration(4, 5) {
+        @Override public void migrate(@NonNull SupportSQLiteDatabase database) {
+            database.execSQL("ALTER TABLE `track_state` ADD COLUMN `lastFmCheckedAt` INTEGER");
+            database.execSQL("CREATE TABLE IF NOT EXISTS `lastfm_scrobbles` ("
+                    + "`eventId` TEXT NOT NULL, `localTrackId` INTEGER NOT NULL, "
+                    + "`artist` TEXT NOT NULL, `title` TEXT NOT NULL, `album` TEXT NOT NULL, "
+                    + "`startedAtUtc` INTEGER NOT NULL, `durationSeconds` INTEGER NOT NULL, "
+                    + "`state` TEXT NOT NULL, `attempts` INTEGER NOT NULL, `lastError` TEXT, "
+                    + "`nextRetryAt` INTEGER, PRIMARY KEY(`eventId`))");
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_lastfm_scrobbles_state` "
+                    + "ON `lastfm_scrobbles` (`state`)");
+        }
+    };
+
+    public static final Migration MIGRATION_5_6 = new Migration(5, 6) {
+        @Override public void migrate(@NonNull SupportSQLiteDatabase database) {
+            // lastfm_scrobbles becomes a shared outbox for whichever scrobble
+            // destination (Last.fm or Adolar Scrobbler) is currently
+            // connected - see LastFmScrobble.destination.
+            database.execSQL("ALTER TABLE `lastfm_scrobbles` ADD COLUMN `destination` "
+                    + "TEXT NOT NULL DEFAULT 'lastfm'");
+        }
+    };
+
     public abstract LibraryDao libraryDao();
 
     public static LocalLibraryDatabase get(Context context) {
@@ -84,7 +118,7 @@ public abstract class LocalLibraryDatabase extends RoomDatabase {
                             context.getApplicationContext(),
                             LocalLibraryDatabase.class,
                             "adolar-next-library.db"
-                    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                             .addCallback(new Callback() {
                                 @Override
                                 public void onOpen(@NonNull SupportSQLiteDatabase database) {

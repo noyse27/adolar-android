@@ -20,6 +20,30 @@ android {
         versionCode 2
         versionName "0.1.1-next"
 
+        // Supply these through ~/.gradle/gradle.properties or CI secrets. The
+        // Last.fm protocol requires the shared secret on native clients.
+        def lastFmKey = providers.gradleProperty("LASTFM_API_KEY")
+                .orElse(providers.environmentVariable("LASTFM_API_KEY")).getOrElse("")
+        def lastFmSecret = providers.gradleProperty("LASTFM_SHARED_SECRET")
+                .orElse(providers.environmentVariable("LASTFM_SHARED_SECRET")).getOrElse("")
+        buildConfigField "String", "LASTFM_API_KEY", "\"${lastFmKey}\""
+        buildConfigField "String", "LASTFM_SHARED_SECRET", "\"${lastFmSecret}\""
+
+        // Optional second, mutually-exclusive scrobble destination: a
+        // self-hosted Adolar Scrobbler instance (last.fm 2.0-compatible,
+        // https://github.com/noyse27/adolar-scrobbler). API_ROOT is that
+        // instance's own 2.0 Web Service URL, not a fixed constant like
+        // Last.fm's, since it points at whichever instance the admin runs.
+        def adolarScrobblerRoot = providers.gradleProperty("ADOLAR_SCROBBLER_API_ROOT")
+                .orElse(providers.environmentVariable("ADOLAR_SCROBBLER_API_ROOT")).getOrElse("")
+        def adolarScrobblerKey = providers.gradleProperty("ADOLAR_SCROBBLER_API_KEY")
+                .orElse(providers.environmentVariable("ADOLAR_SCROBBLER_API_KEY")).getOrElse("")
+        def adolarScrobblerSecret = providers.gradleProperty("ADOLAR_SCROBBLER_SHARED_SECRET")
+                .orElse(providers.environmentVariable("ADOLAR_SCROBBLER_SHARED_SECRET")).getOrElse("")
+        buildConfigField "String", "ADOLAR_SCROBBLER_API_ROOT", "\"${adolarScrobblerRoot}\""
+        buildConfigField "String", "ADOLAR_SCROBBLER_API_KEY", "\"${adolarScrobblerKey}\""
+        buildConfigField "String", "ADOLAR_SCROBBLER_SHARED_SECRET", "\"${adolarScrobblerSecret}\""
+
         javaCompileOptions {
             annotationProcessorOptions {
                 arguments += ["room.schemaLocation": "$projectDir/schemas"]

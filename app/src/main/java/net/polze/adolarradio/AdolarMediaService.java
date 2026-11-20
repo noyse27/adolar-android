@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -41,15 +42,22 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 
+import net.polze.adolarradio.local.ArtworkCache;
 import net.polze.adolarradio.local.LocalLibraryDatabase;
 import net.polze.adolarradio.local.LibraryDao;
 import net.polze.adolarradio.local.LibraryFacet;
 import net.polze.adolarradio.local.LocalPlaylist;
 import net.polze.adolarradio.local.LocalTrack;
+import net.polze.adolarradio.local.Id3PlayCount;
+import net.polze.adolarradio.local.TrackState;
+import net.polze.adolarradio.local.LastFmScrobble;
+import net.polze.adolarradio.local.AdolarScrobblerSessionStore;
 import net.polze.adolarradio.local.SmartFilter;
 import net.polze.adolarradio.local.DeviceTokenStore;
 import net.polze.adolarradio.local.SyncOutboxEntry;
 import net.polze.adolarradio.local.sync.SyncOutboxWorker;
+import net.polze.adolarradio.local.sync.LastFmScrobbleWorker;
+import net.polze.adolarradio.local.sync.AdolarScrobblerScrobbleWorker;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -67,6 +75,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -123,6 +132,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     private static final long CROSSFADE_MS = 8000L;
     private static final long CROSSFADE_TICK_MS = 50L;
     private static final long PREVIOUS_TRACK_THRESHOLD_MS = 5000L;
+    private Bitmap currentArtwork;
     private static final String LOCAL_PLAYBACK_PREFS = "local_playback_session";
     private static final int DEFAULT_BROWSER_PAGE_SIZE = 100;
     private static final int MAX_BROWSER_PAGE_SIZE = 200;
@@ -1218,6 +1228,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 track.local = true;
                 track.localId = local.id;
                 track.localDocumentUri = local.documentUri;
+                track.localArtworkTrack = local;
                 track.title = local.title == null || local.title.isEmpty()
                         ? "Unbekannter Titel" : local.title;
                 track.artist = local.artist == null || local.artist.isEmpty()
@@ -1661,6 +1672,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 .setContentTitle(title)
                 .setContentText(artist)
                 .setSubText(currentStationName)
+                .setLargeIcon(currentArtwork)
                 .setContentIntent(contentPendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setOnlyAlertOnce(true)
@@ -1760,6 +1772,9 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
             payload.put("playcount_eligible", track.localPlayCountRecorded);
             payload.put("scrobble_eligible", track.localScrobbleEligible);
             payload.put("source", "android_local");
+            // The backend may store this event but must never scrobble it: the
+            // independent Android Last.fm queue owns local-file delivery.
+            payload.put("lastfm_delivery", "android_direct");
         } catch (Exception ignored) {
             // JSONObject.put only throws for NaN/Infinite doubles, never here.
         }
@@ -1768,10 +1783,46 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         long localTrackId = track.localId;
         long playedAt = System.currentTimeMillis();
         new Thread(() -> {
-            LocalLibraryDatabase.get(this).libraryDao()
-                    .recordLocalListeningOutcome(localTrackId, creditsPlaycount, playedAt, entry);
+            LibraryDao localDao = LocalLibraryDatabase.get(this).libraryDao();
+            localDao.recordLocalListeningOutcome(localTrackId, creditsPlaycount, playedAt, entry);
+            if (track.localScrobbleEligible && !"started".equals(eventType)) {
+                LastFmScrobble scrobble = new LastFmScrobble();
+                scrobble.eventId = track.localEventId;
+                scrobble.localTrackId = localTrackId;
+                scrobble.artist = track.artist == null ? "" : track.artist;
+                scrobble.title = track.title == null ? "" : track.title;
+                scrobble.album = track.album == null ? "" : track.album;
+                scrobble.startedAtUtc = track.localStartedAtUtc;
+                scrobble.durationSeconds = (int) Math.max(0L, durationMs / 1000L);
+                // Last.fm and Adolar Scrobbler are mutually exclusive - only
+                // one of these two session stores is ever populated.
+                scrobble.destination = !AdolarScrobblerSessionStore.session(this).isEmpty()
+                        ? LastFmScrobble.DEST_ADOLAR_SCROBBLER
+                        : LastFmScrobble.DEST_LASTFM;
+                localDao.insertLastFmScrobble(scrobble);
+                LastFmScrobbleWorker.enqueue(this);
+                AdolarScrobblerScrobbleWorker.enqueue(this);
+            }
+            if (creditsPlaycount) {
+                LocalTrack localTrack = localDao.getTrack(localTrackId);
+                TrackState state = localDao.getTrackState(localTrackId);
+                if (localTrack != null && state != null && isMp3(localTrack)) {
+                    int effectiveCount = Math.max(state.playCount,
+                            Math.max(state.tagPlayCount, state.lastFmPlayCount));
+                    if (Id3PlayCount.write(this, Uri.parse(localTrack.documentUri), effectiveCount)) {
+                        localDao.importTagPlayCount(localTrackId, effectiveCount);
+                    }
+                }
+            }
             SyncOutboxWorker.enqueue(this);
         }, "AdolarLocalOutboxEvent").start();
+    }
+
+    private static boolean isMp3(LocalTrack track) {
+        return (track.mimeType != null && ("audio/mpeg".equalsIgnoreCase(track.mimeType)
+                || "audio/mp3".equalsIgnoreCase(track.mimeType)))
+                || (track.displayName != null
+                && track.displayName.toLowerCase(Locale.ROOT).endsWith(".mp3"));
     }
 
     private void rememberCurrentTrack() {
@@ -1874,6 +1925,28 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
     }
 
     private void updateMetadata(Track track) {
+        currentArtwork = null;
+        mediaSession.setMetadata(buildMetadata(track, null));
+        if (track.local && track.localArtworkTrack != null) {
+            ArtworkCache.get(this).load(track.localArtworkTrack, (key, bitmap) -> {
+                // Artwork extraction is asynchronous. Never publish a late result
+                // for a track that is no longer the active MediaSession item.
+                if (bitmap == null || currentTrack != track || mediaSession == null) return;
+                currentArtwork = bitmap;
+                mediaSession.setMetadata(buildMetadata(track, bitmap));
+                if (foregroundStarted) {
+                    NotificationManager manager = (NotificationManager) getSystemService(
+                            NOTIFICATION_SERVICE
+                    );
+                    if (manager != null) {
+                        manager.notify(PLAYBACK_NOTIFICATION_ID, buildNotification());
+                    }
+                }
+            });
+        }
+    }
+
+    private MediaMetadataCompat buildMetadata(Track track, Bitmap artwork) {
         String mediaId = track.local
                 ? LOCAL_TRACK_PREFIX + track.localId
                 : String.valueOf(track.id);
@@ -1888,13 +1961,18 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
                 .putLong(METADATA_KEY_HAS_LYRICS, track.hasLyrics ? 1L : 0L)
                 .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, currentStationName)
                 .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, track.durationMs);
+        if (artwork != null) {
+            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
+                    .putBitmap(MediaMetadataCompat.METADATA_KEY_ART, artwork)
+                    .putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, artwork);
+        }
         if (track.hasCover && !track.coverHash.isEmpty()) {
             builder.putString(
                     MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI,
                     AdolarPrefs.apiUrl(this) + "/api/cover/" + Uri.encode(track.coverHash) + "?full=1"
             );
         }
-        mediaSession.setMetadata(builder.build());
+        return builder.build();
     }
 
     private void requestLyricsIfMissing(Track track) {
@@ -2086,6 +2164,7 @@ public class AdolarMediaService extends MediaBrowserServiceCompat {
         String localEventId;
         long localStartedAtUtc;
         String localDocumentUri;
+        LocalTrack localArtworkTrack;
         String title;
         String artist;
         String album;

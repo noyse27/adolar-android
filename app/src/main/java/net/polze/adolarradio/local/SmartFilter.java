@@ -5,6 +5,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +42,126 @@ public final class SmartFilter {
         ParseException(String message) {
             super(message);
         }
+    }
+
+    public static final class ClassicRule {
+        public final String field;
+        public final String op;
+        public final String value;
+        public final String unit;
+
+        public ClassicRule(String field, String op, String value, String unit) {
+            this.field = field;
+            this.op = op;
+            this.value = value;
+            this.unit = unit;
+        }
+    }
+
+    public static String classicToJson(String mode, List<ClassicRule> classicRules)
+            throws ParseException {
+        return classicToJson(mode, classicRules, 100, "random");
+    }
+
+    public static String classicToJson(
+            String mode, List<ClassicRule> classicRules, int limit, String sort
+    ) throws ParseException {
+        if (classicRules == null || classicRules.isEmpty()) {
+            throw new ParseException("Bitte mindestens ein Kriterium anlegen.");
+        }
+        JSONArray rules = new JSONArray();
+        for (ClassicRule classic : classicRules) {
+            String value = classic.value == null ? "" : classic.value.trim();
+            if (value.isEmpty()) throw new ParseException("Bei einem Kriterium fehlt der Wert.");
+            JSONObject rule = new JSONObject();
+            try {
+                rule.put("field", classic.field);
+                rule.put("op", classic.op);
+                if (isNumeric(classic.field) || isRelativeDate(classic.field)) {
+                    rule.put("value", parseNumber(value));
+                } else {
+                    rule.put("value", value);
+                }
+                if (isRelativeDate(classic.field)) {
+                    rule.put("unit", classic.unit == null ? "days" : classic.unit);
+                }
+                rules.put(rule);
+            } catch (JSONException impossible) {
+                throw new ParseException("Das Kriterium konnte nicht gespeichert werden.");
+            }
+        }
+        JSONObject saved = new JSONObject();
+        try {
+            saved.put("editor_version", 2);
+            saved.put("editor_mode", "classic");
+            saved.put("limit", Math.max(1, Math.min(10000, limit)));
+            saved.put("sort", sort == null ? "random" : sort);
+            saved.put("rules", group("any".equals(mode) ? "any" : "all", rules));
+        } catch (JSONException impossible) {
+            throw new ParseException("Die Kriterien konnten nicht gespeichert werden.");
+        }
+        return saved.toString();
+    }
+
+    public static String smartText(String filterJson) {
+        try {
+            return new JSONObject(filterJson).optString("smart_text", "");
+        } catch (JSONException ignored) {
+            return "";
+        }
+    }
+
+    public static boolean isClassic(String filterJson) {
+        try {
+            return "classic".equals(new JSONObject(filterJson).optString("editor_mode"));
+        } catch (JSONException ignored) {
+            return false;
+        }
+    }
+
+    public static String classicMode(String filterJson) {
+        try {
+            JSONObject root = new JSONObject(filterJson).optJSONObject("rules");
+            return root == null ? "all" : root.optString("mode", "all");
+        } catch (JSONException ignored) {
+            return "all";
+        }
+    }
+
+    public static int classicLimit(String filterJson) {
+        try {
+            return new JSONObject(filterJson).optInt("limit", 100);
+        } catch (JSONException ignored) {
+            return 100;
+        }
+    }
+
+    public static String classicSort(String filterJson) {
+        try {
+            return new JSONObject(filterJson).optString("sort", "random");
+        } catch (JSONException ignored) {
+            return "random";
+        }
+    }
+
+    public static List<ClassicRule> classicRules(String filterJson) {
+        List<ClassicRule> result = new ArrayList<>();
+        try {
+            JSONObject root = new JSONObject(filterJson).optJSONObject("rules");
+            JSONArray rules = root == null ? null : root.optJSONArray("rules");
+            if (rules == null) return result;
+            for (int index = 0; index < rules.length(); index++) {
+                JSONObject rule = rules.optJSONObject(index);
+                if (rule == null || rule.has("rules")) continue;
+                result.add(new ClassicRule(
+                        rule.optString("field"), rule.optString("op"),
+                        rule.optString("value"), rule.optString("unit", "days")
+                ));
+            }
+        } catch (JSONException ignored) {
+            // A malformed saved editor state simply opens with one fresh criterion.
+        }
+        return result;
     }
 
     public static String parseToJson(String input) throws ParseException {
@@ -105,10 +227,54 @@ public final class SmartFilter {
             for (LocalTrack track : tracks) {
                 if (matches(rules, track, stateByTrack.get(track.id), now)) result.add(track);
             }
+            sortAndLimit(result, stateByTrack, new JSONObject(filterJson));
         } catch (JSONException ignored) {
             // Invalid persisted rules resolve to an empty, safe playlist.
         }
         return result;
+    }
+
+    private static void sortAndLimit(
+            List<LocalTrack> tracks, Map<Long, TrackState> states, JSONObject saved
+    ) {
+        String sort = saved.optString("sort", "artist");
+        Comparator<LocalTrack> comparator = null;
+        if ("title".equals(sort)) comparator = Comparator.comparing(
+                track -> safe(track.title), String.CASE_INSENSITIVE_ORDER
+        );
+        else if ("album".equals(sort)) comparator = Comparator.comparing(
+                track -> safe(track.album), String.CASE_INSENSITIVE_ORDER
+        );
+        else if ("artist".equals(sort)) comparator = Comparator.comparing(
+                track -> safe(track.artist), String.CASE_INSENSITIVE_ORDER
+        );
+        else if ("recent_added".equals(sort)) comparator = (left, right) ->
+                Long.compare(right.addedAt, left.addedAt);
+        else if ("recent_played".equals(sort)) comparator = (left, right) ->
+                Long.compare(lastPlayed(states.get(right.id)), lastPlayed(states.get(left.id)));
+        else if ("most_played".equals(sort)) comparator = (left, right) ->
+                Integer.compare(playCount(states.get(right.id)), playCount(states.get(left.id)));
+        else if ("least_played".equals(sort)) comparator = (left, right) ->
+                Integer.compare(playCount(states.get(left.id)), playCount(states.get(right.id)));
+        if (comparator != null) tracks.sort(comparator); else if ("random".equals(sort)) {
+            Collections.shuffle(tracks);
+        }
+        int limit = saved.optInt("limit", Integer.MAX_VALUE);
+        if (limit > 0 && tracks.size() > limit) tracks.subList(limit, tracks.size()).clear();
+    }
+
+    private static int playCount(TrackState state) {
+        return state == null ? 0 : Math.max(state.playCount, Math.max(
+                state.tagPlayCount, state.lastFmPlayCount
+        ));
+    }
+
+    private static long lastPlayed(TrackState state) {
+        return state == null || state.lastPlayedAt == null ? 0 : state.lastPlayedAt;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 
     private static JSONObject parseClause(String field, String segment) throws ParseException {
@@ -234,13 +400,18 @@ public final class SmartFilter {
         }
         String field = node.getString("field");
         String op = node.getString("op");
-        if ("added".equals(field)) {
+        if (isRelativeDate(field)) {
             long amount = node.getLong("value") * unitMillis(node.optString("unit"));
-            return "before".equals(op) ? track.addedAt < now - amount : track.addedAt >= now - amount;
+            long actual = "lastplayed".equals(field)
+                    ? state == null || state.lastPlayedAt == null ? 0 : state.lastPlayedAt
+                    : track.addedAt;
+            return "before".equals(op) ? actual < now - amount : actual >= now - amount;
         }
         if (isNumeric(field)) {
             long actual;
-            if ("playcount".equals(field)) actual = state == null ? 0 : state.playCount;
+            if ("playcount".equals(field)) actual = state == null ? 0 : Math.max(
+                    state.playCount, Math.max(state.tagPlayCount, state.lastFmPlayCount)
+            );
             else if ("decade".equals(field)) actual = track.year == null ? 0 : (track.year / 10) * 10;
             else actual = track.year == null ? 0 : track.year;
             long expected = node.getLong("value");
@@ -255,6 +426,8 @@ public final class SmartFilter {
         actual = actual == null ? "" : actual.toLowerCase(Locale.GERMAN);
         String expected = node.optString("value").toLowerCase(Locale.GERMAN);
         if ("not_contains".equals(op)) return !actual.contains(expected);
+        if ("starts_with".equals(op)) return actual.startsWith(expected);
+        if ("ends_with".equals(op)) return actual.endsWith(expected);
         if ("not_equals".equals(op)) return !actual.equals(expected);
         if ("equals".equals(op)) return actual.equals(expected);
         return actual.contains(expected);
@@ -331,6 +504,10 @@ public final class SmartFilter {
 
     private static boolean isNumeric(String field) {
         return "year".equals(field) || "decade".equals(field) || "playcount".equals(field);
+    }
+
+    private static boolean isRelativeDate(String field) {
+        return "added".equals(field) || "lastplayed".equals(field);
     }
 
     private static boolean insideQuotes(String text, int end) {

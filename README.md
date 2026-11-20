@@ -36,6 +36,45 @@ The standalone repository runs the same checks locally and in GitHub Actions:
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
+## Direct Last.fm scrobbling for local files
+
+Local files are scrobbled by the Android app itself, independently of the
+Adolar server. Obtain a Last.fm API account and provide its credentials outside
+the repository, for example in `~/.gradle/gradle.properties`:
+
+```properties
+LASTFM_API_KEY=...
+LASTFM_SHARED_SECRET=...
+```
+
+The user then connects Last.fm under **Local settings**. The resulting Last.fm
+session key is stored with Android Keystore-backed encrypted preferences. Local
+scrobbles remain in Room while offline and WorkManager sends them directly to
+Last.fm when a network is available. Radio streams continue to be scrobbled by
+Adolar Web; local sync events carry `lastfm_delivery=android_direct` so the
+backend must not submit them a second time.
+
+### Adolar Scrobbler (alternative to Last.fm, mutually exclusive)
+
+The same **Local settings** screen can instead connect to a self-hosted
+[Adolar Scrobbler](https://github.com/noyse27/adolar-scrobbler) instance,
+which speaks the same last.fm-2.0-compatible protocol. Only one of the two is
+ever active - connecting to either one clears the other's stored session and
+drops whatever it still owed (see `LastFmScrobble.destination`). Provide its
+credentials the same way:
+
+```properties
+ADOLAR_SCROBBLER_API_ROOT=https://scrobbler.example.com/2.0/
+ADOLAR_SCROBBLER_API_KEY=...
+ADOLAR_SCROBBLER_SHARED_SECRET=...
+```
+
+`API_KEY`/`SHARED_SECRET` are that instance's app credentials, shown to admins
+under its own Settings page (App-Zugangsdaten). Unlike Last.fm, login uses a
+direct username/password submission (`auth.getMobileSession`), since the
+instance is admin-trusted rather than a third-party service - no OAuth-style
+redirect is needed.
+
 ## Android Auto developer test
 
 1. Open Android Auto settings on the phone.
